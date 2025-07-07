@@ -934,6 +934,108 @@ def plot_jackpot_to_jackpot_all_eras(eras:list[pb.PowerballEra]) -> None:
     fig.savefig(os.path.join(era.lotto,fig_filename), facecolor=fig.get_facecolor(),bbox_inches='tight')
     plt.close(fig)
 
+def plot_pretty_winners_between_jackpots_with_nll(era:pb.PowerballEra) -> None:
+    '''
+    Plot the winners between jackpots with NLL coloring.
+    :param era: The PowerballEra object containing the draw data
+    This function creates a plot showing the log10(Winners) between jackpots, colored by NLL.
+    It includes a top panel with a line plot of log10(Winners) at each jackpot, and a bottom panel with a histogram of those values.
+    The x-axis is the date of the jackpot win, and the y-axis is log10(Winners).
+    The x-axis is inverted to show the most recent draws on the left. 
+    It also includes a colorbar for the NLL values.
+    '''
+    # Prep the DataFrame
+    df = era.details.copy()
+    jack_df = df[df['is_jackpot'] == 1]
+
+    # Compute summary stats on the jackpot‐to‐jackpot log10 winners
+    vals = jack_df['Winners_between_jackpots_log10']
+    mean_val   = vals.mean()
+    median_val = vals.median()
+    std_val    = vals.std(ddof=1)
+
+    # now color each dot by NLLbeta
+    cvals = jack_df['NLLbeta'].values
+    vmin, vmax = np.nanpercentile(cvals, [5,95])
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+    cmap = mpl.colormaps['plasma']
+
+    # Styling
+
+    # Make the figure
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(18, 10), sharex=False)
+    fig.suptitle(
+        f"Winners Between Jackpots in {era.era_string}\n"
+        f"Burstiness $B$={era.jackpot_burstiness:.3f}, "
+        f"Fano $FI$={era.jackpot_fano:.3f}",
+        fontsize=18,
+        y=0.97
+    )
+
+    # ─── Top panel: line of log10 winners at each jackpot ────────────────────────
+    #    marker='o',
+    #    markersize=6,
+    ax1.plot(
+        jack_df['Date'],
+        vals,
+        linestyle='-',
+        linewidth=2,
+        label='Log$_{10}$(Winners Between Jackpots)'
+    )
+    sc = ax1.scatter(
+        jack_df['Date'],
+        vals,
+        c=cvals,
+        cmap=cmap,
+        norm=norm,
+        s=80,
+        edgecolor='k',
+        linewidth=0.5,
+        label='NLL at Jackpot'
+    )
+    ax1.set_ylabel('Log$_{10}$(Winners Between Jackpots)', fontsize=14)
+    ax1.legend(loc='upper left', fontsize=12)
+    ax1.set_title("Each Jackpot's Total Winners Since Previous Win", fontsize=16)
+    ax1.axhline(mean_val,   color='C1', linestyle='--', linewidth=2, label=f"Mean = {mean_val:.2f}")
+    ax1.axhline(median_val, color='C2', linestyle=':',  linewidth=2, label=f"Median = {median_val:.2f}")
+
+    cbar = fig.colorbar(sc, ax=ax1, pad=0.01,fraction=0.03)
+    cbar.set_label('NLL', fontsize=12)
+
+    # format dates on the top panel but hide tick labels
+    ax1.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax1.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax1.xaxis.get_major_locator()))
+    ax1.invert_xaxis()  # invert x-axis to show most recent on the left
+    plt.setp(ax1.xaxis.get_majorticklabels(), rotation=30, ha='right')
+    ax1.set_xlabel(f"Jackpot Win Date")
+
+    # ─── Bottom panel: histogram of those values ────────────────────────────────
+    n_bins = 30
+    ax2.hist(
+        vals, 
+        bins=n_bins,
+        alpha=0.6,
+        edgecolor='black',
+        label='Winners Between Jackpots'
+    )
+    # vertical lines for mean & median
+    ax2.axvline(mean_val,   color='C1', linestyle='--', linewidth=2, label=f"Mean = {mean_val:.2f}")
+    ax2.axvline(median_val, color='C2', linestyle=':',  linewidth=2, label=f"Median = {median_val:.2f}")
+
+    ax2.set_xlabel('Log$_{10}$(Winners Between Jackpots)', fontsize=14)
+    ax2.set_ylabel('Frequency', fontsize=14)
+    ax2.set_title("Distribution of Winners Between Jackpots", fontsize=16)
+    ax2.legend(loc='upper left', fontsize=12)
+
+    # share the same date axis only for the bottom (if you prefer calendar ticks)
+    plt.setp(ax2.get_xticklabels(), rotation=45, ha='right')
+
+    # Tight layout & save
+    plt.tight_layout(rect=[0,0,1,0.95])
+    out_path = os.path.join(era.lotto, f"{era.lotto}-Winners-Between-Jackpots-nll-{era.era_string}.png")
+    fig.savefig(out_path, bbox_inches='tight')
+    plt.close(fig)
+
 
 def summarize_era(era:pb.PowerballEra) -> None:
     '''
@@ -1016,7 +1118,19 @@ def summarize_era(era:pb.PowerballEra) -> None:
     fig_filename = f"{era.lotto}-NLL-{era.era_string}-winning-tickets.png"
     fig.savefig(os.path.join(era.lotto,fig_filename), facecolor=fig.get_facecolor(),bbox_inches='tight')
     plt.close(fig)
+    #
+    # Setup the winners between jackpots for cadence analysis and plotting
+    #
+    era.details['grp'] = era.details['is_jackpot'].astype(int).cumsum()
+    era.details['grp_adj'] = era.details['grp'] - era.details['is_jackpot']
+    interval_sums = era.details.groupby('grp_adj')['Winners'].sum().rename('Winners_between_jackpots')
+    era.details = era.details.join(interval_sums, on='grp_adj')
+    era.details['Winners_between_jackpots'] = era.details['Winners_between_jackpots'].fillna(0)
+    era.details['Winners_between_jackpots_log10'] = np.log10(era.details['Winners_between_jackpots'].replace(0, np.nan))
+    era.details['Winners_between_jackpots_log10'] = era.details['Winners_between_jackpots_log10'].fillna(0)
+
     plot_nll_and_logw_with_burstiness(era, window_days=90)
+    plot_pretty_winners_between_jackpots_with_nll(era)
 
 def summarize(input_file_name: str, lotto: str) -> None:
     """
